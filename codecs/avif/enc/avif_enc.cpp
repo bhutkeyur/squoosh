@@ -1,6 +1,6 @@
-#include "avif/avif.h"
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
+#include "avif/avif.h"
 
 using namespace emscripten;
 
@@ -24,39 +24,35 @@ struct AvifOptions {
   int subsample;
 };
 
-avifRWData output = AVIF_DATA_EMPTY;
+thread_local const val Uint8Array = val::global("Uint8Array");
+
 val encode(std::string buffer, int width, int height, AvifOptions options) {
+  avifRWData output = AVIF_DATA_EMPTY;
   int depth = 8;
   avifPixelFormat format;
   switch (options.subsample) {
-  case 0:
-    format = AVIF_PIXEL_FORMAT_YUV420;
-    break;
-  case 1:
-    format = AVIF_PIXEL_FORMAT_YUV422;
-    break;
-  case 2:
-    format = AVIF_PIXEL_FORMAT_YUV444;
-    break;
-  }
-  avifImage *image = avifImageCreate(width, height, depth, format);
-
-  uint8_t *rgba = (uint8_t *)buffer.c_str();
-
-  avifImageAllocatePlanes(image, AVIF_PLANES_RGB);
-  avifImageAllocatePlanes(image, AVIF_PLANES_A);
-
-  for (int y = 0; y < height; y++) {
-    for (int x = 0; x < width; x++) {
-      int pixelOffset = y * width + x;
-      image->rgbPlanes[0][pixelOffset] = rgba[pixelOffset * 4 + 0];
-      image->rgbPlanes[1][pixelOffset] = rgba[pixelOffset * 4 + 1];
-      image->rgbPlanes[2][pixelOffset] = rgba[pixelOffset * 4 + 2];
-      image->alphaPlane[pixelOffset] = rgba[pixelOffset * 4 + 3];
-    }
+    case 0:
+      format = AVIF_PIXEL_FORMAT_YUV420;
+      break;
+    case 1:
+      format = AVIF_PIXEL_FORMAT_YUV422;
+      break;
+    case 2:
+      format = AVIF_PIXEL_FORMAT_YUV444;
+      break;
   }
 
-  avifEncoder *encoder = avifEncoderCreate();
+  avifImage* image = avifImageCreate(width, height, depth, format);
+
+  uint8_t* rgba = (uint8_t*)buffer.c_str();
+
+  avifRGBImage srcRGB;
+  avifRGBImageSetDefaults(&srcRGB, image);
+  srcRGB.pixels = rgba;
+  srcRGB.rowBytes = width * 4;
+  avifImageRGBToYUV(image, &srcRGB);
+
+  avifEncoder* encoder = avifEncoderCreate();
   encoder->maxThreads = 1;
   encoder->minQuantizer = options.minQuantizer;
   encoder->maxQuantizer = options.maxQuantizer;
@@ -67,12 +63,12 @@ val encode(std::string buffer, int width, int height, AvifOptions options) {
   if (encodeResult != AVIF_RESULT_OK) {
     return val::null();
   }
+
+  auto js_result = Uint8Array.new_(typed_memory_view(output.size, output.data));
   avifImageDestroy(image);
   avifEncoderDestroy(encoder);
-  return val(typed_memory_view(output.size, output.data));
+  return js_result;
 }
-
-void free_result() { avifRWDataFree(&output); }
 
 EMSCRIPTEN_BINDINGS(my_module) {
   value_object<AvifOptions>("AvifOptions")
@@ -84,5 +80,4 @@ EMSCRIPTEN_BINDINGS(my_module) {
       .field("subsample", &AvifOptions::subsample);
 
   function("encode", &encode);
-  function("free_result", &free_result);
 }
